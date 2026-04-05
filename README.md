@@ -11,7 +11,31 @@
 
 <br />
 
+![Hero Banner](./assets/hero_banner.png)
+
 CodeScope AI is a full-stack web application designed to help developers **understand unfamiliar codebases blazing fast**. By simply pasting a public GitHub repository URL, CodeScope AI clones, parses, and visualizes the repository structure, all while offering deep insights through its LLM-powered engine.
+
+## 📸 Gallery
+
+<p align="center">
+  <img src="./assets/ai_chat.png" alt="AI Chat Interface" width="800">
+</p>
+
+## 🧩 How It Works (Workflow)
+
+```mermaid
+graph TD
+    A[User Inputs GitHub URL] --> B{FastAPI Backend}
+    B --> C[Clone & Parse Repo]
+    C --> D[Extract AST & Imports]
+    D --> E[Build Dependency Graph]
+    E --> F[Security Radar Scan]
+    F --> G[Groq LLM Context Generation]
+    G --> H[React / Vite Frontend]
+    H --> I[Interactive Dashboard]
+    I --> J[AI Chat & Explain Code]
+    I --> K[View Flow Simulator]
+```
 
 ## ✨ Features
 
