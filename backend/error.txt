@@ -1,0 +1,1 @@
+{"detail":"Chat failed: Invalid format specifier ' \"file1.js\", \"lines\": [10, 20] ' for object of type 'str'"}
