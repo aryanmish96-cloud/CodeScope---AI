@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      # You can add other environment variables here
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Optional: mount a local folder for persistent analysis or temp clones if needed
+      - ./backend:/app/backend/temp
+    restart: always
+
+# Example usage:
+# Create a .env file with GROQ_API_KEY=your_key
+# docker-compose up -d

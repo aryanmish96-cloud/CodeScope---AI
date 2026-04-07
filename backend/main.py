@@ -12,14 +12,16 @@ import traceback
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 # Ensure .env is loaded from the backend directory
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
-from repo_parser import parse_repository
+from repo_parser import parse_repository, RepoTooLargeError
 from graph_builder import build_graph
 from architecture import detect_architecture
 from ai_engine import (
@@ -50,6 +52,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Error Handlers ─────────────────────────────────────────────────────────────
+@app.exception_handler(RepoTooLargeError)
+async def repo_too_large_handler(request: Request, exc: RepoTooLargeError):
+    return JSONResponse(
+        status_code=413,  # Payload Too Large
+        content={"detail": str(exc)},
+    )
 
 # All JSON API routes live under /api (matches Vite proxy and direct backend calls)
 api = APIRouter(prefix="/api", tags=["codescope"])
@@ -472,6 +482,41 @@ async def file_content(session_id: str, file_path: str):
 
 
 app.include_router(api)
+
+
+# ── Static files & SPA catch-all ───────────────────────────────────────────────
+# In a real Docker build, frontend/dist will be copied to backend/dist or similar.
+# We prioritize the FRONTEND_DIST_PATH env var, then fallback to relative path.
+dist_path = os.getenv(
+    "FRONTEND_DIST_PATH", 
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+)
+
+logger.info(f"Looking for static files in: {dist_path}")
+
+if os.path.exists(dist_path):
+    logger.info("Static files directory found. Mounting /assets and SPA catch-all.")
+    app.mount("/assets", StaticFiles(directory=os.path.join(dist_path, "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # If it's an API route that somehow leaked here, let it 404
+        if full_path.startswith("api/"):
+             raise HTTPException(status_code=404)
+        
+        # Check if file exists in dist (e.g. favicon.ico)
+        local_file = os.path.join(dist_path, full_path)
+        if os.path.isfile(local_file):
+            return FileResponse(local_file)
+        
+        # Otherwise serve index.html for SPA routing
+        index_file = os.path.join(dist_path, "index.html")
+        if os.path.exists(index_file):
+            return FileResponse(index_file)
+        
+        raise HTTPException(status_code=404, detail="Static files not found")
+else:
+    logger.warning(f"Static files directory NOT found at: {dist_path}. SPA will not be served.")
 
 
 if __name__ == "__main__":
