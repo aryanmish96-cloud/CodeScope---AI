@@ -11,7 +11,20 @@ from typing import Any
 
 import git
 
+import git
+import tempfile
+from pathlib import Path
+from typing import Any
+
+# ── exceptions ────────────────────────────────────────────────────────────────
+class RepoTooLargeError(Exception):
+    """Raised when repository exceeds safety limits (files or lines)."""
+    pass
+
+
 # ── constants ──────────────────────────────────────────────────────────────────
+MAX_REPO_FILES = 8000       # Guard against Render's 512MB RAM
+MAX_TOTAL_LINES = 1000000    # Guard against CPU/RAM spikes
 SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
     ".env", "dist", "build", ".next", ".nuxt", "coverage", ".cache",
@@ -168,6 +181,19 @@ def parse_repository(repo_url: str) -> dict[str, Any]:
             rel = str(fpath.relative_to(root_path)).replace("\\", "/")
             content = _read_file(fpath) if _is_text_file(fpath) else ""
             lines = _count_lines(fpath) if _is_text_file(fpath) else 0
+
+            # Safety check: files and lines
+            if file_count >= MAX_REPO_FILES:
+                raise RepoTooLargeError(
+                    f"Repository too large: exceeded limit of {MAX_REPO_FILES} files. "
+                    "Try a smaller repository."
+                )
+            if total_lines + lines > MAX_TOTAL_LINES:
+                raise RepoTooLargeError(
+                    f"Repository too large: exceeded limit of {MAX_TOTAL_LINES} lines. "
+                    "Try a smaller repository."
+                )
+
             imports = _extract_imports(fpath, content)
 
             files_map[rel] = {
