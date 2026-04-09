@@ -45,6 +45,8 @@ graph TD
 - 🛡️ **Risk Radar**: Lightning-fast regex-based security scans highlighting risky patterns like exposed secrets and `eval()` usage.
 - 🤖 **Groq-Powered AI**: Chat with your codebase context. Get instant file summaries ("Explain Like I'm 5"), line highlights, and architecture analysis—powered by Groq's high-speed inference.
 - 📄 **README Generator**: Automatically synthesize a high-quality README tailored for your codebase context.
+- 📑 **Documentation Export (PDF)**: Generate complete, multi-page documentation PDFs from the AI-generated README view with one click.
+- 📘 **Analysis Report (PDF)**: Export a polished project report including graph, dashboard, AI panel, and code snapshots.
 - 🎞️ **Execution Simulator**: Step through a predicted execution flow of complex logic.
 
 ## 🚀 Quick Start
@@ -80,6 +82,16 @@ npm run dev
 ```
 
 > Open the local URL Vite prints (e.g. `http://localhost:3000`). Make sure your backend from the steps above is running so Vite can proxy API calls seamlessly.
+
+### 4. Docker Quick Start (One Command)
+Run the complete app stack in containers:
+```bash
+docker compose up --build
+```
+
+Then open:
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:8000`
 
 ## 📚 Detailed Documentation
 
