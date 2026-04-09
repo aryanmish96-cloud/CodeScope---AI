@@ -11,14 +11,14 @@
 
 <br />
 
-![Landing Page](./assets/landing_page.png)
+![Landing Page]("Screenshot 2026-04-09 201024.png")
 
 CodeScope AI is a full-stack web application designed to help developers **understand unfamiliar codebases blazing fast**. By simply pasting a public GitHub repository URL, CodeScope AI clones, parses, and visualizes the repository structure, all while offering deep insights through its LLM-powered engine.
 
 ## 📸 Gallery
 
 <p align="center">
-  <img src="Screenshot 2026-04-09 201024.png" alt="Full Repository Analysis" width="800">
+  <img src=" alt="Full Repository Analysis" width="800">
   <br>
   <i>Full repository explorer with dependency graphs and AI explanations</i>
 </p>
