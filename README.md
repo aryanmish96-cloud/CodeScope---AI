@@ -11,14 +11,28 @@
 
 <br />
 
-![Hero Banner](./assets/hero_banner.png)
+![Landing Page](./assets/landing_page.png)
 
 CodeScope AI is a full-stack web application designed to help developers **understand unfamiliar codebases blazing fast**. By simply pasting a public GitHub repository URL, CodeScope AI clones, parses, and visualizes the repository structure, all while offering deep insights through its LLM-powered engine.
 
 ## 📸 Gallery
 
 <p align="center">
-  <img src="./assets/ai_chat.png" alt="AI Chat Interface" width="800">
+  <img src="./assets/full_view.png" alt="Full Repository Analysis" width="800">
+  <br>
+  <i>Full repository explorer with dependency graphs and AI explanations</i>
+</p>
+
+<p align="center">
+  <img src="./assets/dashboard.png" alt="Project Dashboard" width="800">
+  <br>
+  <i>In-depth project statistics and architecture hints</i>
+</p>
+
+<p align="center">
+  <img src="./assets/graph_chat.png" alt="AI Chat" width="800">
+  <br>
+  <i>Context-aware AI chat with visual graph mapping</i>
 </p>
 
 ## 🧩 How It Works (Workflow)
