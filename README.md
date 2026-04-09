@@ -18,7 +18,7 @@ CodeScope AI is a full-stack web application designed to help developers **under
 ## 📸 Gallery
 
 <p align="center">
-  <img src="./assets/full_view.png" alt="Full Repository Analysis" width="800">
+  <img src="Screenshot 2026-04-09 201024.png" alt="Full Repository Analysis" width="800">
   <br>
   <i>Full repository explorer with dependency graphs and AI explanations</i>
 </p>
