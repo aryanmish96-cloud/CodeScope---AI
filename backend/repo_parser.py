@@ -1,97 +1,66 @@
-"""
-repo_parser.py – Clone and parse a GitHub repository into a structured tree + file map.
-"""
-
 import os
 import re
 import shutil
+import hashlib
 import tempfile
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Set, Tuple
 
 import git
-
-import git
-import tempfile
-from pathlib import Path
-from typing import Any
 
 # ── exceptions ────────────────────────────────────────────────────────────────
 class RepoTooLargeError(Exception):
     """Raised when repository exceeds safety limits (files or lines)."""
     pass
 
-
 # ── constants ──────────────────────────────────────────────────────────────────
-MAX_REPO_FILES = 8000       # Guard against Render's 512MB RAM
-MAX_TOTAL_LINES = 1000000    # Guard against CPU/RAM spikes
+MAX_REPO_FILES = 8000
+MAX_TOTAL_LINES = 1000000
+MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # hard cap per file for parse safety
+MAX_FILE_READ_BYTES = 512 * 1024  # read preview only for speed
+MAX_FILE_CONTENT_CHARS = 20000  # content sent to UI/AI
+PARSE_CACHE_VERSION = 2
+
 SKIP_DIRS = {
-    ".git", "node_modules", "__pycache__", ".venv", "venv", "env",
-    ".env", "dist", "build", ".next", ".nuxt", "coverage", ".cache",
-    "vendor", "target", ".gradle", ".idea", ".vscode", "eggs", ".eggs",
-    "*.egg-info", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-}
-SKIP_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
-    ".mp4", ".mp3", ".wav", ".pdf", ".zip", ".tar", ".gz",
-    ".woff", ".woff2", ".ttf", ".eot", ".lock",
-}
-TEXT_EXTENSIONS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rs",
-    ".cpp", ".c", ".h", ".cs", ".rb", ".php", ".swift", ".kt",
-    ".html", ".css", ".scss", ".sass", ".less",
-    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env",
-    ".md", ".txt", ".sh", ".bash", ".zsh", ".dockerfile", ".sql",
-    ".graphql", ".proto", ".xml", ".vue", ".svelte",
+    ".git", "node_modules", "dist", "build", "__pycache__", ".venv", "venv",
+    "env", ".env", ".next", ".nuxt", "coverage", ".cache", "vendor", "target",
+    ".gradle", ".idea", ".vscode", "eggs", ".eggs", "*.egg-info",
 }
 
+# Only parse useful extensions
+PARSE_EXTENSIONS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cpp", ".c", ".h", ".cs",
+    ".go", ".rs", ".html", ".css", ".json", ".md", ".yml", ".yaml", ".sh",
+}
+ALWAYS_INCLUDE_FILES = {
+    "package.json",
+    "requirements.txt",
+    "pyproject.toml",
+    "poetry.lock",
+    "go.mod",
+    "Cargo.toml",
+    "pom.xml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "Dockerfile",
+}
 
-# ── helpers ─────────────────────────────────────────────────────────────────────
-def _is_text_file(path: Path) -> bool:
-    return path.suffix.lower() in TEXT_EXTENSIONS
-
-
-def _count_lines(path: Path) -> int:
-    try:
-        return sum(1 for _ in path.open("r", encoding="utf-8", errors="ignore"))
-    except Exception:
-        return 0
-
-
-def _read_file(path: Path, max_chars: int = 15_000) -> str:
-    try:
-        content = path.read_text(encoding="utf-8", errors="ignore")
-        return content[:max_chars]
-    except Exception:
-        return ""
-
+# Cache directory for repositories
+CACHE_DIR = Path(tempfile.gettempdir()) / "codescope_cache"
+CACHE_DIR.mkdir(exist_ok=True)
 
 # ── import extraction ────────────────────────────────────────────────────────────
 _IMPORT_PATTERNS = {
-    ".py": re.compile(
-        r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.,\s]+))", re.MULTILINE
-    ),
-    ".js": re.compile(
-        r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""",
-        re.MULTILINE,
-    ),
-    ".jsx": re.compile(
-        r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""",
-        re.MULTILINE,
-    ),
-    ".ts": re.compile(
-        r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""",
-        re.MULTILINE,
-    ),
-    ".tsx": re.compile(
-        r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""",
-        re.MULTILINE,
-    ),
+    ".py": re.compile(r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.,\s]+))", re.MULTILINE),
+    ".js": re.compile(r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""", re.MULTILINE),
+    ".jsx": re.compile(r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""", re.MULTILINE),
+    ".ts": re.compile(r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""", re.MULTILINE),
+    ".tsx": re.compile(r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""", re.MULTILINE),
 }
 
-
-def _extract_imports(path: Path, content: str) -> list[str]:
-    pattern = _IMPORT_PATTERNS.get(path.suffix.lower())
+def _extract_imports(suffix: str, content: str) -> List[str]:
+    pattern = _IMPORT_PATTERNS.get(suffix)
     if not pattern:
         return []
     imports = []
@@ -101,144 +70,223 @@ def _extract_imports(path: Path, content: str) -> list[str]:
                 imports.append(group.strip())
     return imports
 
+# ── parser helpers ────────────────────────────────────────────────────────────────
 
-# ── tree builder ─────────────────────────────────────────────────────────────────
-def _build_tree(root: Path, rel_root: Path) -> dict[str, Any]:
-    """Recursively build a VS-Code-style file tree."""
-    name = root.name
-    relative = str(root.relative_to(rel_root)).replace("\\", "/")
+def _should_skip_dir(name: str) -> bool:
+    return name in SKIP_DIRS or name.endswith(".egg-info")
 
-    if root.is_dir():
-        # skip unwanted directories
-        if name in SKIP_DIRS or name.endswith(".egg-info"):
-            return None
-        children = []
-        for child in sorted(root.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
-            node = _build_tree(child, rel_root)
-            if node:
-                children.append(node)
-        return {
-            "id": relative or "root",
-            "name": name,
-            "type": "folder",
-            "children": children,
-            "path": relative,
-        }
-    else:
-        if root.suffix.lower() in SKIP_EXTENSIONS:
-            return None
-        return {
-            "id": relative,
-            "name": name,
-            "type": "file",
-            "extension": root.suffix.lower().lstrip("."),
-            "lines": _count_lines(root) if _is_text_file(root) else 0,
-            "path": relative,
-            "children": [],
-        }
+def _should_parse_file(name: str, suffix: str) -> bool:
+    if suffix in PARSE_EXTENSIONS:
+        return True
+    return name in ALWAYS_INCLUDE_FILES
 
-
-# ── main parser ───────────────────────────────────────────────────────────────────
-def parse_repository(repo_url: str) -> dict[str, Any]:
-    """
-    Clone repo, parse structure, extract file contents + imports.
-    Returns a rich data payload for the frontend.
-    """
-    tmp_dir = tempfile.mkdtemp(prefix="codescope_")
+def _read_file_safe(path: Path) -> Tuple[str, int, bool, int]:
+    """Read file preview and return (content, line_count, truncated, file_size)."""
     try:
-        # strip .git suffix for cleanliness
-        clean_url = repo_url.rstrip("/")
-        if not clean_url.endswith(".git"):
-            clean_url += ".git"
+        file_size = path.stat().st_size
+        if file_size > MAX_FILE_SIZE_BYTES:
+            return "", 0, True, file_size
 
-        repo = git.Repo.clone_from(clean_url, tmp_dir, depth=1, env={"GIT_TERMINAL_PROMPT": "0"})
-        root_path = Path(tmp_dir)
+        with path.open("rb") as f:
+            raw = f.read(MAX_FILE_READ_BYTES)
+            has_more = f.read(1) != b""
 
-        # Build file tree
-        tree = _build_tree(root_path, root_path)
-        tree["name"] = clean_url.split("/")[-1].replace(".git", "")
+        content = raw.decode("utf-8", errors="ignore")
+        if len(content) > MAX_FILE_CONTENT_CHARS:
+            content = content[:MAX_FILE_CONTENT_CHARS]
+            has_more = True
 
-        # Gather all text files
-        files_map: dict[str, dict] = {}
-        all_imports: dict[str, list[str]] = {}
-        total_lines = 0
-        file_count = 0
+        # Count lines only in preview for speed; adequate for ranking/visualization.
+        line_count = content.count("\n") + (1 if content else 0)
+        return content, line_count, has_more, file_size
+    except Exception:
+        return "", 0, True, 0
 
-        for fpath in root_path.rglob("*"):
-            if not fpath.is_file():
+def _traverse_and_parse(root_path: Path, stats: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Dict], Dict[str, List[str]]]:
+    """Fast iterative traversal to build tree + file map."""
+    files_map: Dict[str, Dict] = {}
+    all_imports: Dict[str, List[str]] = {}
+
+    root_node = {"id": "root", "name": stats["repo_name"], "type": "folder", "children": [], "path": ""}
+    stack: List[Tuple[Path, Dict[str, Any]]] = [(root_path, root_node)]
+
+    while stack:
+        current_path, parent_node = stack.pop()
+        try:
+            with os.scandir(current_path) as it:
+                entries = list(it)
+        except Exception:
+            continue
+
+        for entry in entries:
+            name = entry.name
+            if entry.is_dir(follow_symlinks=False):
+                if _should_skip_dir(name):
+                    continue
+                full_path = Path(entry.path)
+                rel_path = str(full_path.relative_to(root_path)).replace("\\", "/")
+                dir_node = {
+                    "id": rel_path,
+                    "name": name,
+                    "type": "folder",
+                    "children": [],
+                    "path": rel_path,
+                }
+                parent_node["children"].append(dir_node)
+                stack.append((full_path, dir_node))
                 continue
-            if fpath.suffix.lower() in SKIP_EXTENSIONS:
-                continue
-            # skip hidden/ignored dirs
-            skip = False
-            for part in fpath.relative_to(root_path).parts:
-                if part in SKIP_DIRS or part.endswith(".egg-info"):
-                    skip = True
-                    break
-            if skip:
+
+            if not entry.is_file(follow_symlinks=False):
                 continue
 
-            rel = str(fpath.relative_to(root_path)).replace("\\", "/")
-            content = _read_file(fpath) if _is_text_file(fpath) else ""
-            lines = _count_lines(fpath) if _is_text_file(fpath) else 0
+            suffix = Path(name).suffix.lower()
+            if not _should_parse_file(name, suffix):
+                continue
 
-            # Safety check: files and lines
-            if file_count >= MAX_REPO_FILES:
-                raise RepoTooLargeError(
-                    f"Repository too large: exceeded limit of {MAX_REPO_FILES} files. "
-                    "Try a smaller repository."
-                )
-            if total_lines + lines > MAX_TOTAL_LINES:
-                raise RepoTooLargeError(
-                    f"Repository too large: exceeded limit of {MAX_TOTAL_LINES} lines. "
-                    "Try a smaller repository."
-                )
+            full_path = Path(entry.path)
+            rel_path = str(full_path.relative_to(root_path)).replace("\\", "/")
+            content, lines, truncated, file_size = _read_file_safe(full_path)
+            if not content and lines == 0 and file_size == 0:
+                continue
 
-            imports = _extract_imports(fpath, content)
+            stats["file_count"] += 1
+            stats["total_lines"] += lines
+            if stats["file_count"] > MAX_REPO_FILES:
+                raise RepoTooLargeError(f"Exceeded {MAX_REPO_FILES} files.")
+            if stats["total_lines"] > MAX_TOTAL_LINES:
+                raise RepoTooLargeError(f"Exceeded {MAX_TOTAL_LINES} lines.")
 
-            files_map[rel] = {
-                "path": rel,
-                "name": fpath.name,
-                "extension": fpath.suffix.lower().lstrip("."),
+            imports = _extract_imports(suffix, content)
+            file_data = {
+                "path": rel_path,
+                "name": name,
+                "extension": suffix.lstrip("."),
                 "lines": lines,
                 "content": content,
                 "imports": imports,
             }
-            all_imports[rel] = imports
-            total_lines += lines
-            file_count += 1
+            if truncated:
+                file_data["content_truncated"] = True
+                file_data["size_bytes"] = file_size
 
-        # Git metadata
+            files_map[rel_path] = file_data
+            all_imports[rel_path] = imports
+            parent_node["children"].append({
+                "id": rel_path,
+                "name": name,
+                "type": "file",
+                "extension": suffix.lstrip("."),
+                "lines": lines,
+                "path": rel_path,
+                "children": [],
+            })
+
+    return root_node, files_map, all_imports
+
+def parse_repository(repo_url: str, update_status=None) -> Dict[str, Any]:
+    """
+    Optimized parser: Caching, single-pass traversal, strict filtering.
+    """
+    clean_url = repo_url.rstrip("/")
+    if not clean_url.endswith(".git"):
+        clean_url += ".git"
+    
+    repo_name = clean_url.split("/")[-1].replace(".git", "")
+    url_hash = hashlib.md5(clean_url.encode()).hexdigest()[:12]
+    repo_dir = CACHE_DIR / f"{repo_name}_{url_hash}"
+    parse_cache_file = repo_dir / ".codescope_parse_cache.json"
+    
+    try:
+        if repo_dir.exists():
+            if update_status: update_status("Using cached repository...")
+            repo = git.Repo(repo_dir)
+            # Optional: repo.remotes.origin.pull() for latest, but user asked for fast.
+        else:
+            if update_status: update_status("Cloning repository (shallow)...")
+            try:
+                repo = git.Repo.clone_from(
+                    clean_url,
+                    repo_dir,
+                    depth=1,
+                    single_branch=True,
+                    no_tags=True,
+                    env={"GIT_TERMINAL_PROMPT": "0"},
+                    multi_options=["--filter=blob:none"],
+                )
+            except Exception:
+                # Fallback for remotes that do not support partial clone filters.
+                repo = git.Repo.clone_from(
+                    clean_url,
+                    repo_dir,
+                    depth=1,
+                    single_branch=True,
+                    no_tags=True,
+                    env={"GIT_TERMINAL_PROMPT": "0"},
+                )
+
+        head_sha = ""
         try:
-            commits = list(repo.iter_commits(max_count=10))
+            head_sha = repo.head.commit.hexsha
+        except Exception:
+            head_sha = ""
+
+        if parse_cache_file.exists():
+            try:
+                cached = json.loads(parse_cache_file.read_text(encoding="utf-8"))
+                if (
+                    cached.get("cache_version") == PARSE_CACHE_VERSION
+                    and cached.get("head_sha") == head_sha
+                ):
+                    if update_status:
+                        update_status("Loaded parsed repository from cache...")
+                    return cached["payload"]
+            except Exception:
+                pass
+
+        if update_status: update_status("Parsing and building tree (single-pass)...")
+        stats = {"file_count": 0, "total_lines": 0, "repo_name": repo_name}
+        tree, files_map, all_imports = _traverse_and_parse(repo_dir, stats)
+        
+        # Git metadata
+        if update_status: update_status("Extracting git metadata...")
+        try:
+            commits = list(repo.iter_commits(max_count=5))
             git_meta = {
                 "branch": repo.active_branch.name,
                 "last_commit": commits[0].message.strip() if commits else "",
-                "contributor_count": len(set(c.author.email for c in commits)),
                 "recent_commits": [
-                    {
-                        "sha": c.hexsha[:7],
-                        "message": c.message.strip()[:80],
-                        "author": c.author.name,
-                        "date": c.committed_datetime.isoformat(),
-                    }
-                    for c in commits[:5]
-                ],
+                    {"sha": c.hexsha[:7], "message": c.message.strip()[:80], "author": c.author.name, "date": c.committed_datetime.isoformat()}
+                    for c in commits
+                ]
             }
-        except Exception:
+        except:
             git_meta = {}
 
-        return {
+        payload = {
             "tree": tree,
             "files": files_map,
             "imports": all_imports,
-            "stats": {
-                "file_count": file_count,
-                "total_lines": total_lines,
-                "repo_name": tree["name"],
-            },
-            "git": git_meta,
+            "stats": stats,
+            "git": git_meta
         }
+        try:
+            parse_cache_file.write_text(
+                json.dumps(
+                    {
+                        "cache_version": PARSE_CACHE_VERSION,
+                        "head_sha": head_sha,
+                        "payload": payload,
+                    },
+                    ensure_ascii=True,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        return payload
 
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    except Exception as e:
+        # If cloning failed, clean up dir so we don't cache a broken clone
+        if repo_dir.exists() and not (repo_dir / ".git").exists():
+            shutil.rmtree(repo_dir, ignore_errors=True)
+        raise e

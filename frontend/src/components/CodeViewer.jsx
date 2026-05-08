@@ -5,6 +5,7 @@ import { getFileContent } from '../api/client'
 
 export default function CodeViewer({ sessionId, selectedFile, highlights }) {
   const [sourceCode, setSourceCode] = useState('')
+  const [meta, setMeta] = useState({ content_truncated: false, size_bytes: 0 })
   const [loading, setLoading] = useState(false)
   const scrollRootRef = useRef(null)
   
@@ -15,9 +16,18 @@ export default function CodeViewer({ sessionId, selectedFile, highlights }) {
       setLoading(true)
       try {
         const fileData = await getFileContent(sessionId, selectedFile.path)
-        if (isMounted) setSourceCode(fileData.content || '')
+        if (isMounted) {
+          setSourceCode(fileData.content || '')
+          setMeta({
+            content_truncated: !!fileData.content_truncated,
+            size_bytes: Number(fileData.size_bytes || 0),
+          })
+        }
       } catch (err) {
-        if (isMounted) setSourceCode(`// Error loading source code for ${selectedFile.path}\n// ${err.message}`)
+        if (isMounted) {
+          setSourceCode(`// Error loading source code for ${selectedFile.path}\n// ${err.message}`)
+          setMeta({ content_truncated: false, size_bytes: 0 })
+        }
       } finally {
         if (isMounted) setLoading(false)
       }
@@ -65,6 +75,20 @@ export default function CodeViewer({ sessionId, selectedFile, highlights }) {
         {loading ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
             Loading source code...
+          </div>
+        ) : meta.content_truncated ? (
+          <div style={{ margin: 0, padding: 16, background: '#1e1e1e', fontSize: 13, fontFamily: 'var(--font-mono)', overflow: 'auto', height: '100%' }}>
+            <div style={{ color: '#ecda53', marginBottom: '16px', fontSize: 11, background: '#333', padding: '6px 12px', borderRadius: '4px', display: 'inline-block' }}>
+              ⚠️ Showing preview for performance ({meta.size_bytes > 0 ? `${Math.round(meta.size_bytes / 1024)} KB file` : 'large file'}).
+            </div>
+            <pre style={{ margin: 0, color: '#d4d4d4', whiteSpace: 'pre-wrap' }}>{sourceCode || '// Preview unavailable'}</pre>
+          </div>
+        ) : sourceCode && (sourceCode.length > 20000 || sourceCode.split('\n').length > 500) ? (
+          <div style={{ margin: 0, padding: 16, background: '#1e1e1e', fontSize: 13, fontFamily: 'var(--font-mono)', overflow: 'auto', height: '100%' }}>
+            <div style={{ color: '#ecda53', marginBottom: '16px', fontSize: 11, background: '#333', padding: '6px 12px', borderRadius: '4px', display: 'inline-block' }}>
+               ⚠️ Syntax highlighting disabled for large file performance.
+            </div>
+            <pre style={{ margin: 0, color: '#d4d4d4', whiteSpace: 'pre-wrap' }}>{sourceCode}</pre>
           </div>
         ) : (
           <SyntaxHighlighter

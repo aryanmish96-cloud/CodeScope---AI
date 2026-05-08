@@ -127,12 +127,13 @@ def detect_architecture(files: dict[str, dict]) -> dict[str, Any]:
                 layers_detected[layer] = True
                 break
 
-    # Detect databases
-    all_content = " ".join(d.get("content", "")[:2000] for d in files.values())
+    # Detect databases fast
     for keyword, db_name in DB_SIGNALS.items():
-        if keyword in all_content.lower():
-            if db_name not in databases:
-                databases.append(db_name)
+        for path, data in files.items():
+            if keyword in data.get("content", "")[:2000].lower():
+                if db_name not in databases:
+                    databases.append(db_name)
+                break
 
     # Determine project type
     active_layers = [l for l, v in layers_detected.items() if v]

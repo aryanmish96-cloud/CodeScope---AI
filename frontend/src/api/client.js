@@ -22,6 +22,18 @@ if (import.meta.env.DEV) {
 export const analyzeRepo = (repoUrl) =>
   api.post('/analyze', { repo_url: repoUrl }).then((r) => r.data)
 
+/** Start async analysis job */
+export const startAnalyzeRepo = (repoUrl) =>
+  api.post('/analyze/start', { repo_url: repoUrl }).then((r) => r.data)
+
+/** Poll async analysis status */
+export const getAnalyzeStatus = (jobId) =>
+  api.get(`/analyze/status/${jobId}`).then((r) => r.data)
+
+/** Fetch async analysis result once done */
+export const getAnalyzeResult = (jobId) =>
+  api.get(`/analyze/result/${jobId}`).then((r) => r.data)
+
 /** Get AI summary for a session (uses repo data stored server-side for that session) */
 export const summarizeRepo = (sessionId) =>
   api.post('/summarize', { session_id: sessionId }).then((r) => r.data)

@@ -9,6 +9,8 @@ import logging
 import os
 import time
 import traceback
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from dotenv import load_dotenv
@@ -67,6 +69,9 @@ api = APIRouter(prefix="/api", tags=["codescope"])
 # ── In-memory session store ──────────────────────────────────────────────────────
 # Maps session_id → full analysis payload (to avoid re-cloning on every request)
 _sessions: dict[str, dict[str, Any]] = {}
+_jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+_analysis_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="codescope-analysis")
 
 
 # ── Request / Response Models ────────────────────────────────────────────────────
@@ -81,6 +86,121 @@ class AnalyzeRequest(BaseModel):
         if not s:
             raise ValueError("repo_url cannot be empty")
         return s
+
+class AnalyzeStartResponse(BaseModel):
+    job_id: str
+
+
+class AnalyzeStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    message: str | None = None
+    error: str | None = None
+    started_at: float
+    updated_at: float
+
+
+def _new_session_id(repo_url: str) -> str:
+    return hashlib.md5(f"{repo_url}{time.time()}".encode()).hexdigest()[:12]
+
+
+def _new_job_id(repo_url: str) -> str:
+    return hashlib.md5(f"job:{repo_url}:{time.time()}".encode()).hexdigest()[:16]
+
+
+def _run_analysis_pipeline(repo_url: str, set_status=None) -> dict[str, Any]:
+    parsed = parse_repository(repo_url, update_status=set_status)
+    files = parsed["files"]
+    imports = parsed["imports"]
+    stats = parsed["stats"]
+    tree = parsed["tree"]
+    git_meta = parsed.get("git", {})
+
+    if set_status:
+        set_status("Building dependency graph...")
+    graph = build_graph(files, imports, update_status=set_status)
+
+    if set_status:
+        set_status("Detecting architecture...")
+    arch = detect_architecture(files)
+
+    if set_status:
+        set_status("Running security scan...")
+    risks = scan_security_risks(files)
+
+    session_id = _new_session_id(repo_url)
+    _sessions[session_id] = {
+        "repo_url": repo_url,
+        "repo_name": stats["repo_name"],
+        "files": files,
+        "imports": imports,
+        "stats": stats,
+        "arch": arch,
+        "graph": graph,
+        "git": git_meta,
+    }
+
+    return {
+        "session_id": session_id,
+        "repo_name": stats["repo_name"],
+        "tree": tree,
+        "graph": graph,
+        "architecture": arch,
+        "stats": {**stats, "git": git_meta},
+        "security_risks": risks,
+    }
+
+
+def _start_analysis_job(repo_url: str) -> str:
+    job_id = _new_job_id(repo_url)
+    now = time.time()
+    with _jobs_lock:
+        _jobs[job_id] = {
+            "job_id": job_id,
+            "repo_url": repo_url,
+            "status": "queued",
+            "message": "Queued for analysis...",
+            "error": None,
+            "result": None,
+            "started_at": now,
+            "updated_at": now,
+        }
+
+    def update_status(message: str):
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if not job:
+                return
+            job["message"] = message
+            job["updated_at"] = time.time()
+            if job["status"] in {"queued", "running"}:
+                job["status"] = "running"
+
+    def worker():
+        update_status("Starting analysis...")
+        try:
+            result = _run_analysis_pipeline(repo_url, set_status=update_status)
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                if not job:
+                    return
+                job["status"] = "done"
+                job["message"] = "Analysis complete."
+                job["result"] = result
+                job["updated_at"] = time.time()
+        except Exception as exc:
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                if not job:
+                    return
+                job["status"] = "error"
+                job["error"] = str(exc)
+                job["message"] = "Analysis failed."
+                job["updated_at"] = time.time()
+            logger.exception("Analysis job failed: %s", job_id)
+
+    _analysis_pool.submit(worker)
+    return job_id
 
 
 class SummarizeRequest(BaseModel):
@@ -143,7 +263,7 @@ async def health():
 
 # ── Analyze repository ────────────────────────────────────────────────────────────
 @api.post("/analyze")
-async def analyze(req: AnalyzeRequest):
+def analyze(req: AnalyzeRequest):
     """
     Clone and fully analyze a GitHub repository.
     Returns: file tree, dependency graph, architecture, stats, security risks.
@@ -155,60 +275,63 @@ async def analyze(req: AnalyzeRequest):
     logger.info("POST /api/analyze repo_url=%s", repo_url[:120])
 
     try:
-        # 1. Parse repository
-        parsed = parse_repository(repo_url)
-        files = parsed["files"]
-        imports = parsed["imports"]
-        stats = parsed["stats"]
-        tree = parsed["tree"]
-        git_meta = parsed.get("git", {})
-
-        # 2. Build dependency graph
-        graph = build_graph(files, imports)
-
-        # 3. Detect architecture
-        arch = detect_architecture(files)
-
-        # 4. Scan security risks (fast, no AI)
-        risks = scan_security_risks(files)
-
-        # 5. session_id = repo name + timestamp hash
-        session_id = hashlib.md5(f"{repo_url}{time.time()}".encode()).hexdigest()[:12]
-        logger.info("Created session_id=%s for repo=%s", session_id, stats["repo_name"])
-
-        # Store session
-        _sessions[session_id] = {
-            "repo_url": repo_url,
-            "repo_name": stats["repo_name"],
-            "files": files,
-            "imports": imports,
-            "stats": stats,
-            "arch": arch,
-            "graph": graph,
-            "git": git_meta,
-        }
-
-        return {
-            "session_id": session_id,
-            "repo_name": stats["repo_name"],
-            "tree": tree,
-            "graph": graph,
-            "architecture": arch,
-            "stats": {
-                **stats,
-                "git": git_meta,
-            },
-            "security_risks": risks,
-        }
-
+        return _run_analysis_pipeline(repo_url)
+    except RepoTooLargeError:
+        raise
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, f"Analysis failed: {str(e)}")
 
 
+@api.post("/analyze/start", response_model=AnalyzeStartResponse)
+def analyze_start(req: AnalyzeRequest):
+    repo_url = req.repo_url
+    if not repo_url.startswith("http"):
+        raise HTTPException(400, "Invalid repository URL — must start with http:// or https://")
+    logger.info("POST /api/analyze/start repo_url=%s", repo_url[:120])
+    job_id = _start_analysis_job(repo_url)
+    return {"job_id": job_id}
+
+
+@api.get("/analyze/status/{job_id}", response_model=AnalyzeStatusResponse)
+def analyze_status(job_id: str):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Analysis job not found.")
+        return {
+            "job_id": job["job_id"],
+            "status": job["status"],
+            "message": job.get("message"),
+            "error": job.get("error"),
+            "started_at": job["started_at"],
+            "updated_at": job["updated_at"],
+        }
+
+
+@api.get("/analyze/result/{job_id}")
+def analyze_result(job_id: str):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            raise HTTPException(404, "Analysis job not found.")
+        status = job["status"]
+        if status in {"queued", "running"}:
+            raise HTTPException(202, "Analysis still in progress.")
+        if status == "error":
+            raise HTTPException(500, f"Analysis failed: {job.get('error') or 'Unknown error'}")
+        result = job.get("result")
+        if result is None:
+            raise HTTPException(500, "Analysis result missing.")
+        return result
+
+
+
 # ── AI Repo Summary ──────────────────────────────────────────────────────────────
 @api.post("/summarize")
-async def summarize(req: SummarizeRequest):
+def summarize(req: SummarizeRequest):
     """Get AI-powered repo summary (call after /api/analyze)."""
     logger.info("POST /api/summarize session_id=%s", req.session_id)
     session = _sessions.get(req.session_id)
@@ -248,7 +371,7 @@ async def summarize(req: SummarizeRequest):
 
 # ── File Explanation ──────────────────────────────────────────────────────────────
 @api.post("/explain-file")
-async def explain_file_endpoint(req: FileExplainRequest):
+def explain_file_endpoint(req: FileExplainRequest):
     """Get AI explanation for a specific file."""
     logger.info("POST /api/explain-file session_id=%s path=%s", req.session_id, req.file_path)
     session = _sessions.get(req.session_id)
@@ -287,7 +410,7 @@ async def explain_file_endpoint(req: FileExplainRequest):
 
 # ── Execution Simulation ────────────────────────────────────────────────────────
 @api.post("/simulate-execution")
-async def simulate_execution_endpoint(req: FileExplainRequest):
+def simulate_execution_endpoint(req: FileExplainRequest):
     """Get AI-predicted execution flow for a specific file."""
     session = _sessions.get(req.session_id)
     if not session:
@@ -384,7 +507,7 @@ def _normalize_chat_output(session: dict[str, Any], result: dict[str, Any]) -> d
 
 # ── Chat ──────────────────────────────────────────────────────────────────────────
 @api.post("/chat")
-async def chat(req: ChatRequest):
+def chat(req: ChatRequest):
     """Chat with the AI about the repository."""
     session = _sessions.get(req.session_id)
     if not session:
@@ -414,7 +537,7 @@ async def chat(req: ChatRequest):
 
 # ── README Generator ──────────────────────────────────────────────────────────────
 @api.post("/generate-readme")
-async def readme(req: ReadmeRequest):
+def readme(req: ReadmeRequest):
     """Generate a professional README for the repository."""
     session = _sessions.get(req.session_id)
     if not session:
@@ -443,7 +566,7 @@ async def readme(req: ReadmeRequest):
 
 # ── AI Architecture Analysis ──────────────────────────────────────────────────────
 @api.post("/analyze-architecture")
-async def arch_analysis(req: SummarizeRequest):
+def arch_analysis(req: SummarizeRequest):
     """Get AI-powered deep architecture analysis."""
     session = _sessions.get(req.session_id)
     if not session:
@@ -465,7 +588,7 @@ async def arch_analysis(req: SummarizeRequest):
 
 # ── File content (raw) ────────────────────────────────────────────────────────────
 @api.get("/file-content")
-async def file_content(session_id: str, file_path: str):
+def file_content(session_id: str, file_path: str):
     """Get raw file content."""
     session = _sessions.get(session_id)
     if not session:
@@ -478,6 +601,8 @@ async def file_content(session_id: str, file_path: str):
         "content": file_data.get("content", ""),
         "lines": file_data.get("lines", 0),
         "extension": file_data.get("extension", ""),
+        "content_truncated": bool(file_data.get("content_truncated", False)),
+        "size_bytes": int(file_data.get("size_bytes", 0)),
     }
 
 

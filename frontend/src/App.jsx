@@ -12,7 +12,7 @@ import ReadmeModal from './components/ReadmeModal'
 import LoadingOverlay from './components/LoadingOverlay'
 import CodeViewer from './components/CodeViewer'
 
-import { analyzeRepo, summarizeRepo, analyzeArchitecture } from './api/client'
+import { startAnalyzeRepo, getAnalyzeStatus, getAnalyzeResult, summarizeRepo, analyzeArchitecture } from './api/client'
 import { generateCodeScopeReport } from './utils/generateReportPdf'
 
 // ── View tabs for the center panel ──────────────────────────────────
@@ -25,6 +25,7 @@ const CENTER_TABS = [
 export default function App() {
   const [view, setView] = useState('hero') // hero | explorer
   const [loading, setLoading] = useState(false)
+  const [loadingMessage, setLoadingMessage] = useState('')
   const [centerTab, setCenterTab] = useState('graph')
   const [chatOpen, setChatOpen] = useState(false)
   const [readmeOpen, setReadmeOpen] = useState(false)
@@ -45,13 +46,34 @@ export default function App() {
   const [aiArchLoading, setAiArchLoading] = useState(false)
   const [reportLoading, setReportLoading] = useState(false)
 
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
   // ── Analyze repo ──────────────────────────────────────────────────
   const handleAnalyze = useCallback(async (url) => {
     setLoading(true)
+    setLoadingMessage('Queued for analysis...')
     setView('hero')
 
     try {
-      const data = await analyzeRepo(url)
+      const started = await startAnalyzeRepo(url)
+      const jobId = started?.job_id
+      if (!jobId) throw new Error('Failed to start analysis job')
+
+      let status = null
+      for (let i = 0; i < 600; i += 1) { // up to ~10 minutes
+        status = await getAnalyzeStatus(jobId)
+        if (status?.message) setLoadingMessage(status.message)
+        if (status?.status === 'done') break
+        if (status?.status === 'error') {
+          throw new Error(status.error || status.message || 'Analysis failed')
+        }
+        await sleep(1000)
+      }
+      if (!status || status.status !== 'done') {
+        throw new Error('Analysis timed out. Try again.')
+      }
+
+      const data = await getAnalyzeResult(jobId)
       setSessionId(data.session_id)
       setRepoName(data.repo_name)
       setTree(data.tree)
@@ -86,6 +108,7 @@ export default function App() {
       setView('hero')
     } finally {
       setLoading(false)
+      setLoadingMessage('')
     }
   }, [])
 
@@ -169,7 +192,7 @@ export default function App() {
         }}
       />
 
-      <LoadingOverlay visible={loading} />
+      <LoadingOverlay visible={loading} statusText={loadingMessage} />
 
       <AnimatePresence mode="wait">
         {view === 'hero' ? (

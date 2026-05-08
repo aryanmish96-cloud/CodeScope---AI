@@ -11,7 +11,7 @@ const STEPS = [
   { icon: '✨', text: 'Finalizing analysis...' },
 ]
 
-export default function LoadingOverlay({ visible }) {
+export default function LoadingOverlay({ visible, statusText = '' }) {
   const [step, setStep] = useState(0)
 
   useEffect(() => {
@@ -93,7 +93,7 @@ export default function LoadingOverlay({ visible }) {
           }}>
             <AnimatePresence mode="wait">
               <motion.div
-                key={step}
+                key={statusText || step}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
@@ -101,7 +101,7 @@ export default function LoadingOverlay({ visible }) {
                 style={{ fontSize: 15, color: 'var(--text-primary)' }}
               >
                 <span style={{ marginRight: 10, fontSize: 20 }}>{STEPS[step].icon}</span>
-                {STEPS[step].text}
+                {statusText || STEPS[step].text}
               </motion.div>
             </AnimatePresence>
           </div>

@@ -487,11 +487,15 @@ def scan_security_risks(files: dict[str, dict]) -> list[dict]:
         (r"console\.log\(", "Debug Console.log", "low"),
     ]
 
+    COMPILED_PATTERNS = [(re.compile(p, re.IGNORECASE), l, s) for p, l, s in RISK_PATTERNS]
+
     findings = []
     for path, data in files.items():
-        content = data.get("content", "")
-        for pattern, label, severity in RISK_PATTERNS:
-            matches = re.findall(pattern, content, re.IGNORECASE)
+        # Only scan first 4KB to save massive regex CPU cycles
+        content = data.get("content", "")[:4000]
+        if not content: continue
+        for pattern, label, severity in COMPILED_PATTERNS:
+            matches = pattern.findall(content)
             if matches:
                 findings.append({
                     "file": path,
